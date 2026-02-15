@@ -1,1 +1,153 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>VoiceLink Pro</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        .app-container { width: 90%; max-width: 400px; background: #151515; padding: 30px; border-radius: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); text-align: center; border: 1px solid #333; }
+        .logo { font-size: 24px; font-weight: bold; color: #00ff88; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 2px; }
+        #my-id { background: #222; padding: 10px; border-radius: 10px; display: block; margin: 10px 0; border: 1px dashed #555; cursor: pointer; color: #fff; font-size: 0.9em; }
+        input { width: 100%; padding: 12px; background: #222; border: 1px solid #444; border-radius: 10px; color: white; margin: 15px 0; box-sizing: border-box; text-align: center; }
+        .btn { width: 100%; padding: 15px; border-radius: 10px; border: none; background: #00ff88; color: #000; font-weight: bold; font-size: 16px; cursor: pointer; transition: 0.3s; margin-bottom: 10px; }
+        .btn-test { background: #444; color: #fff; font-size: 14px; }
+        .btn-test.active { background: #ff4444; }
+        .btn:active { transform: scale(0.98); }
+        #status { font-size: 12px; color: #777; margin-top: 15px; }
+        .visualizer { height: 8px; width: 100%; background: #222; margin-top: 10px; border-radius: 5px; overflow: hidden; }
+        #bar { height: 100%; width: 0%; background: #00ff88; transition: 0.05s; }
+    </style>
+</head>
+<body>
+
+<div class="app-container">
+    <div class="logo">Voice Link</div>
+    
+    <div>Твой ID (нажми, чтобы скопировать):</div>
+    <div id="my-id" onclick="copyId()">Загрузка...</div>
+
+    <input type="text" id="friend-id" placeholder="Введи ID друга">
+    
+    <button class="btn" onclick="connectToFriend()">СОЕДИНИТЬСЯ</button>
+    
+    <button id="test-btn" class="btn btn-test" onclick="toggleSelfListen()">ТЕСТ МИКРОФОНА: ВЫКЛ</button>
+
+    <div class="visualizer"><div id="bar"></div></div>
+    <div id="status">Система готова</div>
+</div>
+
+<script>
+    const peer = new Peer();
+    const status = document.getElementById('status');
+    const bar = document.getElementById('bar');
+    const testBtn = document.getElementById('test-btn');
+
+    let localStream = null;
+    let selfListenNode = null;
+    let audioCtx = null;
+    let isTesting = false;
+
+    peer.on('open', (id) => {
+        document.getElementById('my-id').innerText = id;
+        status.innerText = "В сети. Жду звонка или ID друга.";
+    });
+
+    function copyId() {
+        const idText = document.getElementById('my-id').innerText;
+        navigator.clipboard.writeText(idText);
+        alert("ID скопирован!");
+    }
+
+    // Функция самопрослушивания (Loopback)
+    async function toggleSelfListen() {
+        if (!isTesting) {
+            try {
+                if (!localStream) {
+                    localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                }
+                
+                if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                
+                const source = audioCtx.createMediaStreamSource(localStream);
+                selfListenNode = audioCtx.destination; 
+                
+                source.connect(selfListenNode); // Подключаем микрофон к динамикам
+                
+                isTesting = true;
+                testBtn.innerText = "ТЕСТ МИКРОФОНА: ИДЕТ...";
+                testBtn.classList.add('active');
+                status.innerText = "Вы слышите себя. Проверьте звук.";
+                startVisualizer(localStream);
+            } catch (err) {
+                alert("Ошибка доступа к микрофону: " + err);
+            }
+        } else {
+            // Выключаем прослушивание (просто перезагружаем аудио контекст для надежности)
+            if (audioCtx) {
+                audioCtx.close();
+                audioCtx = null;
+            }
+            isTesting = false;
+            testBtn.innerText = "ТЕСТ МИКРОФОНА: ВЫКЛ";
+            testBtn.classList.remove('active');
+            status.innerText = "Тест завершен.";
+        }
+    }
+
+    // Прием звонка
+    peer.on('call', (call) => {
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            localStream = stream;
+            call.answer(stream);
+            startVisualizer(stream);
+            call.on('stream', (remoteStream) => playAudio(remoteStream));
+            status.innerText = "На связи (входящий)";
+        });
+    });
+
+    // Исходящий звонок
+    function connectToFriend() {
+        const fId = document.getElementById('friend-id').value;
+        if(!fId) return alert("Введите ID!");
+        
+        status.innerText = "Вызываем друга...";
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+            localStream = stream;
+            const call = peer.call(fId, stream);
+            startVisualizer(stream);
+            call.on('stream', (remoteStream) => {
+                playAudio(remoteStream);
+                status.innerText = "На связи (исходящий)";
+            });
+        });
+    }
+
+    function playAudio(stream) {
+        const audio = new Audio();
+        audio.srcObject = stream;
+        audio.play();
+    }
+
+    function startVisualizer(stream) {
+        const visualCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const source = visualCtx.createMediaStreamSource(stream);
+        const analyser = visualCtx.createAnalyser();
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        
+        function update() {
+            if (!visualCtx) return;
+            analyser.getByteFrequencyData(data);
+            const volume = data.reduce((a, b) => a + b) / data.length;
+            bar.style.width = Math.min(volume * 2.5, 100) + "%";
+            requestAnimationFrame(update);
+        }
+        update();
+    }
+</script>
+
+</body>
+</html>
 
